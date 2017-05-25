@@ -1,9 +1,10 @@
 import sys
 import os
+import logging
 from PyQt4 import QtCore, QtGui, QtSql, uic
 import database
 import time
-from dummy import run
+from sensor import run
 import numpy as np
 import skfuzzy as fuzz
 from skfuzzy import control as ctrl
@@ -23,7 +24,7 @@ class ServerThread(QtCore.QThread):
         x=0
         while True:
             time.sleep(1)
-            os.system('python dummy.py')
+            os.system('python sensor.py')
             ketinggian = run(self)
             #print("Ketinggian : {0}".format(ketinggian))
 
@@ -70,9 +71,33 @@ class SmsWarningThread(QtCore.QThread):
     def run(self):
         self.start_server()
 
-class FuzzyThread(QtCore.QThread):
-    def __init__(self, parent=None):
-        QtCore.QThread.__init__(self)
+class MyApp(QtGui.QMainWindow, Ui_MainWindow, QtGui.QWidget):
+
+    def __init__(self):
+        self.db = QtSql.QSqlDatabase.addDatabase('QSQLITE')
+        self.db.setDatabaseName('data.db')
+        open = self.db.open()
+        QtGui.QMainWindow.__init__(self)
+        Ui_MainWindow.__init__(self)
+        self.setupUi(self)  
+
+        logging.basicConfig(filename='detect.log', format='%(asctime)s %(message)s', level=logging.INFO)
+        logging.info('STARTED')
+
+        self.model = QtSql.QSqlTableModel()
+        delrow = -1
+        self.initializeModel(self.model)
+        
+        view1 = self.createView(self.model)
+        view1.clicked.connect(findrow)
+
+        self.del_btn.clicked.connect(lambda: self.model.removeRow(view1.currentIndex().row()))
+        self.add_btn.clicked.connect(self.addrow)
+        
+        self.dan = QtGui.QCheckBox(self.danger)
+        self.war = QtGui.QCheckBox(self.warning)
+        self.ama = QtGui.QCheckBox(self.aman)
+
         # New Antecedent/Consequent objects hold universe variables and membership # functions 
         x_ketinggian = ctrl.Antecedent(np.arange(0, 20, 1), 'ketinggian')
         x_percepatan = ctrl.Antecedent(np.arange(0, 20, 1), 'percepatan') 
@@ -112,70 +137,37 @@ class FuzzyThread(QtCore.QThread):
 
         status_ctrl = ctrl.ControlSystem([rule1, rule2, rule3, rule4, rule5, rule6, rule7, rule8, rule9])
         self.status = ctrl.ControlSystemSimulation(status_ctrl)
-        
+
         self.thread = ServerThread()
         self.thread.start()
         self.connect(self.thread, QtCore.SIGNAL("tinggi(float)"), self.tinggi)
         self.connect(self.thread, QtCore.SIGNAL("cepat(float)"), self.cepat)
 
     def tinggi(self,a):
+        self.ketinggian.display(a)
         self.status.input['ketinggian'] = a
-        print("ketinggian in")
 
     def cepat(self,b):
+        self.percepatan.display(b)
         self.status.input['percepatan'] = b
-        print("percepatan in")
         self.compute()
 
     def compute(self):
         self.status.compute()
-        #self.status.print_state()
-        val = max(self.status.output, key=self.status.output.get)
-        #print("Nilai Status : {0}".format(self.status.output_status['status']))
+        a = self.status.output['aman']
+        s = self.status.output['siaga']
+        b = self.status.output['bahaya']
+        if(a >= s and a >= b):
+            val = 'aman'
+        elif(s >= a and s >= b):
+            val = 'siaga'
+        elif(b >= a and b >= s):
+            val = 'bahaya'
+
+        print("Nilai Status : {0}".format(self.status.output_status['status']))
         print("Status : {0}".format(val))
-        self.emit(QtCore.SIGNAL("fuzzy(QString)"), str(val))
-
-class MyApp(QtGui.QMainWindow, Ui_MainWindow, QtGui.QWidget):
-
-    def __init__(self):
-        self.db = QtSql.QSqlDatabase.addDatabase('QSQLITE')
-        self.db.setDatabaseName('data.db')
-        open = self.db.open()
-        QtGui.QMainWindow.__init__(self)
-        Ui_MainWindow.__init__(self)
-        self.setupUi(self)  
-
-        self.model = QtSql.QSqlTableModel()
-        delrow = -1
-        self.initializeModel(self.model)
-        
-        view1 = self.createView(self.model)
-        view1.clicked.connect(findrow)
-
-        self.del_btn.clicked.connect(lambda: self.model.removeRow(view1.currentIndex().row()))
-        self.add_btn.clicked.connect(self.addrow)
-        
-        self.dan = QtGui.QCheckBox(self.danger)
-        self.war = QtGui.QCheckBox(self.warning)
-        self.ama = QtGui.QCheckBox(self.aman)
-
-        #self.thread = ServerThread()
-        #self.thread.start()
-        #self.connect(self.thread, QtCore.SIGNAL("tinggi(float)"), self.tinggi)
-        #self.connect(self.thread, QtCore.SIGNAL("cepat(float)"), self.cepat)
-
-        self.thread3 = FuzzyThread()
-        self.thread3.start()
-        self.connect(self.thread3, QtCore.SIGNAL("fuzzy(QString)"), self.doing)
-
-        self.thread = ServerThread()
-        self.connect(self.thread, QtCore.SIGNAL("tinggi(float)"), self.tinggi)
-
-    def tinggi(self, a):
-        self.ketinggian.display(a)
-
-    def cepat(self, a):
-        self.percepatan.display(a)
+        #print(self.status.output)
+        self.doing(val)
 
     def doing(self, a):
         if a == "bahaya" :
@@ -204,11 +196,15 @@ class MyApp(QtGui.QMainWindow, Ui_MainWindow, QtGui.QWidget):
         flag = temp
         if(x!=b):
             if(x==1) :
+                logging.info('STATUS Ketinggian = BAHAYA')
                 self.thread1 = SmsDangerThread()
                 self.thread1.start()
             elif(x==2):
+                logging.info('STATUS Ketinggian = SIAGA')
                 self.thread2 = SmsWarningThread()
                 self.thread2.start()
+            else:
+                logging.info('STATUS Ketinggian = AMAN')
 
     def createView(self, model):
         self.tw.setModel(model)
